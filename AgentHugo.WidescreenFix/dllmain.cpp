@@ -2,96 +2,90 @@
 #include "pch.h"
 #include "MemoryMgr.h"
 #include "rw.h"
-#include "IniReader.h"
 
 using namespace Memory::VP;
 
-float FOV;
-int   ResolutionX, ResolutionY;
-
-
-void RwCameraSetViewWindow_Hook(int camera, RwV2d* view)
+bool IsConfig()
 {
-	float aspectRatio = (float)ResolutionX / (float)ResolutionY;
+	return GetModuleHandle("Config.exe");
+}
+
+
+void Set2DScale()
+{
+	int x = *(int*)0x72AB88;
+	int y = *(int*)0x72AB8C;
+	float aspectRatio = (float)x / (float)y;
+	float aspectRatioReversed = (float)y / (float)x;
+
 	float _4_3 = 4.0f / 3.0f;
-	float _3_4 = 3.0f / 4.0f;
-	view->y *= _3_4;
+	float scaleRatio = aspectRatio / _4_3;
 
-	view->y *= _4_3 / aspectRatio;
-	view->y /= FOV;
-	view->x /= FOV;
-	RwCameraSetViewWindow(camera, view);
-}
 
-void __declspec(naked) Resolution_Hook()
-{
-#ifdef ROBORUMBLE
-	static int jmpContinue = 0x501AD2;
-#else
-	static int jmpContinue = 0x4B1DE8;
-#endif // ROBORUMBLE
-
-	_asm {
-		jmp jmpContinue
-	}
-}
-void Init()
-{
-	CIniReader ini("");
-
-	ResolutionX = ini.ReadInteger("Settings", "ResolutionX", 0);
-	ResolutionY = ini.ReadInteger("Settings", "ResolutionY", 0);
-
-	if (ResolutionX == 0 || ResolutionY == 0)
-	{
-		HWND hWnd = 0;
-		HMONITOR monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-		MONITORINFO info;
-		info.cbSize = sizeof(MONITORINFO);
-		GetMonitorInfo(monitor, &info);
-		ResolutionX = info.rcMonitor.right - info.rcMonitor.left;
-		ResolutionY = info.rcMonitor.bottom - info.rcMonitor.top;
-	}
-
-	FOV = ini.ReadFloat("Settings", "FOV", 1.0f);
-
-	float aspectRatioReversed = (float)ResolutionY / (float)ResolutionX;
-
-#ifdef ROBORUMBLE
-	InjectHook(0x501A0F, Resolution_Hook, PATCH_JUMP);
-	Patch<int>(0x501AD7 + 6, ResolutionX);
-	Patch<int>(0x501AE1 + 6, ResolutionY);
-
-	Patch<float>(0x73266C, 1.0f / (float)ResolutionX * ((float)ResolutionY / 480.0f));
-
-	Patch<float>(0x72F818, aspectRatioReversed);
-	Patch<float>(0x735C60, aspectRatioReversed);
-
-	Nop(0x514F87, 6);
-	InjectHook(0x514FA3, RwCameraSetViewWindow_Hook);
-#else
-	InjectHook(0x4B1D25, Resolution_Hook, PATCH_JUMP);
-	Patch<int>(0x4B1DED + 6, ResolutionX);
-	Patch<int>(0x4B1DF7 + 6, ResolutionY);
-
-	Patch<float>(0x6E2C24, 1.0f / (float)ResolutionX * ((float)ResolutionY / 480.0f));
-
+	float newScale = 1.0f / (float)x * ((float)y / 480.0f);
+	Patch<float>(0x6E2C24, newScale);
 	Patch<float>(0x6E0E5C, aspectRatioReversed);
 	Patch<float>(0x6E59E4, aspectRatioReversed);
 
-	Nop(0x4C59A7, 6);
-	InjectHook(0x4C59C3, RwCameraSetViewWindow_Hook);
-#endif // ROBORUMBLE
+}
 
+void CalculateNewViewWindow(int camera, RwV2d* view)
+{
+	float x = (float)*(int*)0x72AB88;
+	float y = (float)*(int*)0x72AB8C;
+	float aspectRatio = (float)x / (float)y;
 
+	float _4_3 = 4.0f / 3.0f;
+	float scaleRatio = aspectRatio / _4_3;
+
+	view->x *= scaleRatio;
+	view->y *= scaleRatio;
+
+	RwCameraSetViewWindow(camera, view);
 }
 
 
-
-extern "C"
+void __declspec(naked) Set2DScale_Hook()
 {
-	__declspec(dllexport) void InitializeASI()
-	{
-		Init();
+	static int jmpContinue = 0x4B1E10;
+
+	_asm pushad
+	Set2DScale();
+
+	_asm {
+		popad
+		mov     al, ds:0x72AB7C
+		jmp jmpContinue
 	}
 }
+
+
+void Init()
+{
+	if (IsConfig())
+		return;
+
+	InjectHook(0x4B1E0B, Set2DScale_Hook, PATCH_JUMP);
+	InjectHook(0x4C59C3, CalculateNewViewWindow);
+}
+
+
+
+BOOL APIENTRY DllMain(HMODULE hModule,
+	DWORD  ul_reason_for_call,
+	LPVOID lpReserved
+)
+{
+	switch (ul_reason_for_call)
+	{
+	case DLL_PROCESS_ATTACH:
+		Init();
+		break;
+	case DLL_THREAD_ATTACH:
+	case DLL_THREAD_DETACH:
+	case DLL_PROCESS_DETACH:
+		break;
+	}
+	return TRUE;
+}
+
